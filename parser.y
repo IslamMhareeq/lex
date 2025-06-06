@@ -1,7 +1,7 @@
 /* parser.y - Updated for complete semantic rules compliance */
 
 %define parse.error verbose
-%expect 10
+%expect 1
 
 /*----------------------------------------------------------------------*/
 /* C declarations visible to parser and actions                         */
@@ -309,7 +309,7 @@
     if_stmt
     elif_chain
     variable
-    lvalue
+    func_body
 %%
 
 /*----------------------------------------------------------------------*/
@@ -371,6 +371,27 @@ var_decl
       }
       $$ = NULL;
     }
+  | VAR TYPE ID var_list SEMI  /* Handle "var type string s1[100], s2[100];" syntax */
+    {
+      char *upper_type = strdup($3);
+      for(char *c = upper_type; *c; ++c) *c = toupper(*c);
+      
+      for (int i = 0; i < $4->n; i++) {
+        AST *var_node = $4->c[i];
+        char *var_name = var_node->lexeme;
+        
+        if (var_node->n > 0) {
+          char *array_type = malloc(strlen(upper_type) + 10);
+          sprintf(array_type, "%s[]", upper_type);
+          add_symbol(var_name, SYM_VAR, array_type, 0, NULL);
+          free(array_type);
+        } else {
+          add_symbol(var_name, SYM_VAR, upper_type, 0, NULL);
+        }
+      }
+      free(upper_type);
+      $$ = NULL;
+    }
   ;
 
 var_list
@@ -427,10 +448,10 @@ functions
 /* Function definition                                                  */
 /*----------------------------------------------------------------------*/
 func
-  : func_prologue_with_ret T_BEGIN stmt_list T_END
+  : func_prologue_with_ret func_body
     {
       exit_scope();
-      AST *body = $3;
+      AST *body = $2;
       AST *nm = ast_new(N_ID, cur_func_name, 0);
       AST *ps = cur_param_ast;
       AST *rv = ast_new(N_RET, cur_ret_type, 1,
@@ -444,10 +465,10 @@ func
       cur_param_ast = NULL;
     }
 
-  | func_prologue_no_ret T_BEGIN stmt_list T_END
+  | func_prologue_no_ret func_body
     {
       exit_scope();
-      AST *body = $3;
+      AST *body = $2;
       AST *nm = ast_new(N_ID, cur_func_name, 0);
       AST *ps = cur_param_ast;
       AST *rv = ast_new(N_RET, "NONE", 1,
@@ -460,6 +481,14 @@ func
       free(cur_func_name);    cur_func_name    = NULL;
       cur_param_ast = NULL;
     }
+  ;
+
+/*----------------------------------------------------------------------*/
+/* Function body (optional var declarations + begin/end block)         */
+/*----------------------------------------------------------------------*/
+func_body
+  : T_BEGIN stmt_list T_END { $$ = $2; }
+  | declarations T_BEGIN stmt_list T_END { $$ = $3; }
   ;
 
 /*----------------------------------------------------------------------*/
@@ -570,6 +599,27 @@ func_prologue_no_ret
         }
       }
     }
+  | DEF '_' ID LPAREN params RPAREN COLON  /* Handle "def _ main()" syntax */
+    {
+      if (strcmp($3, "main") == 0) {
+        main_count++;
+        if ($5->n != 0) {
+          semantic_error("function '_main_' must not accept arguments");
+        }
+        
+        cur_func_name = strdup("_main_");
+        cur_param_ast = $5;
+        
+        add_func_declaration("_main_", 0, NULL, "NONE");
+        add_symbol("_main_", SYM_FUNC, "NONE", 0, NULL);
+        cur_ret_type = strdup("NONE");
+        enter_scope();
+      } else {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "Invalid function name '_ %s'", $3);
+        semantic_error(error_msg);
+      }
+    }
   ;
 
 /*----------------------------------------------------------------------*/
@@ -632,45 +682,6 @@ type
   ;
 
 /*----------------------------------------------------------------------*/
-/* Left-hand side values for assignment                                 */
-/*----------------------------------------------------------------------*/
-lvalue
-  : variable {
-      Sym *s = lookup($1->lexeme);
-      if (!s) {
-        char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
-        semantic_error(error_msg);
-      }
-      $1->typ = strdup(s->type);
-      $$ = $1;
-    }
-  | '*' expr {
-      if (strncmp($2->typ, "PTR(", 4)) {
-        semantic_error("invalid dereference");
-      }
-      char *inner = strdup($2->typ + 4);
-      inner[strlen(inner) - 1] = 0;
-      
-      AST *deref_node = ast_new(N_UNOP, "*", 1, $2);
-      deref_node->typ = strdup(inner);
-      $$ = deref_node;
-    }
-  | expr LBRACK expr RBRACK {
-      if (strcmp($1->typ, "STRING") && !strstr($1->typ, "STRING[]")) {
-        semantic_error("indexing can only be applied to STRING or STRING[] type");
-      }
-      if (strcmp($3->typ, "INT")) {
-        semantic_error("array index must be INT type");
-      }
-      
-      AST *index_node = ast_new(N_INDEX, "[]", 2, $1, $3);
-      index_node->typ = strdup("CHAR");
-      $$ = index_node;
-    }
-  ;
-
-/*----------------------------------------------------------------------*/
 /* Variable reference                                                   */
 /*----------------------------------------------------------------------*/
 variable
@@ -696,6 +707,8 @@ stmt_list
 stmt
   : var_decl { $$ = $1; }
   
+  | func { $$ = NULL; }  /* Allow nested function definitions */
+  
   | T_BEGIN 
     {
       enter_scope();
@@ -706,8 +719,67 @@ stmt
       $$ = $3;
     }
   
-  | lvalue ASSIGN expr SEMI {
+  | variable ASSIGN expr SEMI {
+      Sym *s = lookup($1->lexeme);
+      if (!s) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
+        semantic_error(error_msg);
+      }
+
+      if (!types_compatible(s->type, $3->typ)) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", s->type, $3->typ);
+        semantic_error(error_msg);
+      }
+
+      if (strcmp(s->type, "REAL") == 0 && strcmp($3->typ, "INT") == 0) {
+        free($3->typ);
+        $3->typ = strdup("REAL");
+      }
+
       $$ = ast_new(N_ASSIGN, "=", 2, $1, $3);
+    }
+
+  | '*' expr ASSIGN expr SEMI {
+      if (strncmp($2->typ, "PTR(", 4)) {
+        semantic_error("invalid dereference");
+      }
+      char *inner = strdup($2->typ + 4);
+      inner[strlen(inner) - 1] = 0;
+      
+      if (!types_compatible(inner, $4->typ)) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", inner, $4->typ);
+        free(inner);
+        semantic_error(error_msg);
+      }
+      
+      if (strcmp(inner, "REAL") == 0 && strcmp($4->typ, "INT") == 0) {
+        free($4->typ);
+        $4->typ = strdup("REAL");
+      }
+      
+      AST *deref_node = ast_new(N_UNOP, "*", 1, $2);
+      deref_node->typ = strdup(inner);
+      $$ = ast_new(N_ASSIGN, "=", 2, deref_node, $4);
+      free(inner);
+    }
+
+  | expr LBRACK expr RBRACK ASSIGN expr SEMI {
+      if (strcmp($1->typ, "STRING") && !strstr($1->typ, "STRING[]")) {
+        semantic_error("indexing can only be applied to STRING or STRING[] type");
+      }
+      if (strcmp($3->typ, "INT")) {
+        semantic_error("array index must be INT type");
+      }
+      if (strcmp($6->typ, "CHAR")) {
+        semantic_error("can only assign CHAR to string element");
+      }
+      
+      AST *index_node = ast_new(N_INDEX, "[]", 2, $1, $3);
+      index_node->typ = strdup("CHAR");
+      $$ = ast_new(N_ASSIGN, "=", 2, index_node, $6);
     }
 
   | if_stmt { $$ = $1; }
