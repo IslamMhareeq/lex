@@ -1,7 +1,7 @@
 /* parser.y - Updated for complete semantic rules compliance */
 
 %define parse.error verbose
-%expect 1
+%expect 3
 
 /*----------------------------------------------------------------------*/
 /* C declarations visible to parser and actions                         */
