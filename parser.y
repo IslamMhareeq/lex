@@ -1,4 +1,4 @@
-/* parser.y - Updated for test file syntax */
+/* parser.y - Updated for complete semantic rules compliance */
 
 %define parse.error verbose
 %expect 10
@@ -59,6 +59,7 @@
   static char  *cur_ret_type = NULL;
   static int main_count = 0;
   static int parsing_functions = 1;
+  static int semantic_error_found = 0;
 
   typedef struct FuncDecl {
     char *name;
@@ -78,6 +79,12 @@
   } UnresolvedCall;
   
   static UnresolvedCall *unresolved_calls = NULL;
+  
+  void semantic_error(const char *msg) {
+    fprintf(stderr, "Semantic Error: %s\n", msg);
+    semantic_error_found = 1;
+    exit(1);
+  }
   
   void add_unresolved_call(const char *name, int pc, char **ptypes) {
     UnresolvedCall *uc = malloc(sizeof *uc);
@@ -154,12 +161,13 @@
                   const char *type, int pcount, char **ptypes)
   {
     if (lookup_current_scope(name)) {
+      char error_msg[256];
       if (kind == SYM_FUNC) {
-        fprintf(stderr,"Error: Function `%s` already declared in this scope\n",name);
+        snprintf(error_msg, sizeof(error_msg), "function '%s' already defined in this scope", name);
       } else {
-        fprintf(stderr,"Error: Variable `%s` already declared in this scope\n",name);
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' redeclared in the same scope", name);
       }
-      exit(1);
+      semantic_error(error_msg);
     }
     
     Sym *s = malloc(sizeof *s);
@@ -190,17 +198,18 @@
       FuncDecl *fd = find_func_declaration(uc->func_name);
       
       if ((!s || s->kind != SYM_FUNC) && !fd) {
-        fprintf(stderr, "Error: Function `%s` not defined\n", uc->func_name);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "function '%s' used before definition", uc->func_name);
+        semantic_error(error_msg);
       }
       
       int expected_params = (s && s->kind == SYM_FUNC) ? s->param_count : fd->param_count;
       char **expected_types = (s && s->kind == SYM_FUNC) ? s->param_types : fd->param_types;
       
       if (expected_params != uc->param_count) {
-        fprintf(stderr,"Error: Function `%s` expects %d parameters, got %d\n",
-                uc->func_name, expected_params, uc->param_count);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "wrong number of arguments in call to '%s'", uc->func_name);
+        semantic_error(error_msg);
       }
       
       for(int i = 0; i < uc->param_count; i++) {
@@ -210,9 +219,10 @@
         }
         
         if(!types_compatible(expected_types[i], uc->param_types[i])){
-          fprintf(stderr,"Error: Parameter %d of function `%s` should be %s, got %s\n",
-                  i+1, uc->func_name, expected_types[i], uc->param_types[i]);
-          exit(1);
+          char error_msg[256];
+          snprintf(error_msg, sizeof(error_msg), "type mismatch in argument %d of call to '%s' (expected %s, found %s)", 
+                   i+1, uc->func_name, expected_types[i], uc->param_types[i]);
+          semantic_error(error_msg);
         }
       }
     }
@@ -317,12 +327,10 @@ program
       parsing_functions = 0;
       
       if (main_count == 0) {
-        fprintf(stderr, "Error: No main function found\n");
-        exit(1);
+        semantic_error("No _main_ function found");
       }
       if (main_count > 1) {
-        fprintf(stderr, "Error: Multiple main functions found\n");
-        exit(1);
+        semantic_error("Multiple _main_ functions found");
       }
       
       validate_unresolved_calls();
@@ -459,21 +467,20 @@ func
 func_prologue_with_ret
   : DEF ID LPAREN params RPAREN COLON RETURNS type
     {
-      if (strcmp($2, "main") == 0) {
+      /* Check for _main_ function requirements */
+      if (strcmp($2, "_main_") == 0) {
         main_count++;
         if ($4->n != 0) {
-          fprintf(stderr, "Error: main function cannot have parameters\n");
-          exit(1);
+          semantic_error("function '_main_' must not accept arguments");
         }
         if (strcmp($8->lexeme, "NONE") != 0) {
-          fprintf(stderr, "Error: main function must return NONE\n");
-          exit(1);
+          semantic_error("function '_main_' must not return a value");
         }
       }
 
-      if (strcmp($8->lexeme, "STRING") == 0) {
-        fprintf(stderr, "Error: Function cannot return STRING type\n");
-        exit(1);
+      /* Check for string[] return type */
+      if (strstr($8->lexeme, "[]") != NULL) {
+        semantic_error("functions cannot return array types");
       }
 
       cur_func_name  = strdup($2);
@@ -518,11 +525,11 @@ func_prologue_with_ret
 func_prologue_no_ret
   : DEF ID LPAREN params RPAREN COLON
     {
-      if (strcmp($2, "main") == 0) {
+      /* Check for _main_ function requirements */
+      if (strcmp($2, "_main_") == 0) {
         main_count++;
         if ($4->n != 0) {
-          fprintf(stderr, "Error: main function cannot have parameters\n");
-          exit(1);
+          semantic_error("function '_main_' must not accept arguments");
         }
       }
 
@@ -560,29 +567,6 @@ func_prologue_no_ret
           free(param->typ);
           param->typ = NULL;
         }
-      }
-    }
-
-  /* Special rule for "_ main" function - handle the space */
-  | DEF '_' ID LPAREN params RPAREN COLON
-    {
-      if (strcmp($3, "main") == 0) {
-        main_count++;
-        if ($5->n != 0) {
-          fprintf(stderr, "Error: main function cannot have parameters\n");
-          exit(1);
-        }
-        
-        cur_func_name = strdup("main");
-        cur_param_ast = $5;
-        
-        add_func_declaration("main", 0, NULL, "NONE");
-        add_symbol("main", SYM_FUNC, "NONE", 0, NULL);
-        cur_ret_type = strdup("NONE");
-        enter_scope();
-      } else {
-        fprintf(stderr, "Error: Invalid function name '_ %s'\n", $3);
-        exit(1);
       }
     }
   ;
@@ -638,9 +622,10 @@ type
         free(upper_base);
         $$ = type_ast;
       } else {
-        fprintf(stderr, "Error: Unknown constructed type %s\n", upper_base);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "unknown constructed type %s", upper_base);
         free(upper_base);
-        exit(1);
+        semantic_error(error_msg);
       }
     }
   ;
@@ -684,15 +669,15 @@ stmt
   | variable ASSIGN expr SEMI {
       Sym *s = lookup($1->lexeme);
       if (!s) {
-        fprintf(stderr, "Error: Variable `%s` not declared\n", $1->lexeme);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
+        semantic_error(error_msg);
       }
 
       if (!types_compatible(s->type, $3->typ)) {
-        fprintf(stderr,
-                "Error: Type mismatch in assignment - cannot assign %s to %s\n",
-                $3->typ, s->type);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", s->type, $3->typ);
+        semantic_error(error_msg);
       }
 
       if (strcmp(s->type, "REAL") == 0 && strcmp($3->typ, "INT") == 0) {
@@ -705,16 +690,16 @@ stmt
 
   | '*' expr ASSIGN expr SEMI {
       if (strncmp($2->typ, "PTR(", 4)) {
-        fprintf(stderr, "Error: Dereference operator can only be applied to pointer types\n");
-        exit(1);
+        semantic_error("invalid dereference");
       }
       char *inner = strdup($2->typ + 4);
       inner[strlen(inner) - 1] = 0;
       
       if (!types_compatible(inner, $4->typ)) {
-        fprintf(stderr, "Error: Type mismatch in pointer assignment - cannot assign %s to %s\n",
-                $4->typ, inner);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", inner, $4->typ);
+        free(inner);
+        semantic_error(error_msg);
       }
       
       if (strcmp(inner, "REAL") == 0 && strcmp($4->typ, "INT") == 0) {
@@ -730,16 +715,13 @@ stmt
 
   | expr LBRACK expr RBRACK ASSIGN expr SEMI {
       if (strcmp($1->typ, "STRING") && !strstr($1->typ, "STRING[]")) {
-        fprintf(stderr, "Error: Indexing can only be applied to STRING or STRING[] type\n");
-        exit(1);
+        semantic_error("indexing can only be applied to STRING or STRING[] type");
       }
       if (strcmp($3->typ, "INT")) {
-        fprintf(stderr, "Error: Array index must be INT type\n");
-        exit(1);
+        semantic_error("array index must be INT type");
       }
       if (strcmp($6->typ, "CHAR")) {
-        fprintf(stderr, "Error: Can only assign CHAR to string element\n");
-        exit(1);
+        semantic_error("can only assign CHAR to string element");
       }
       
       AST *index_node = ast_new(N_INDEX, "[]", 2, $1, $3);
@@ -752,24 +734,21 @@ stmt
   /* Updated while syntax: while : condition begin */
   | WHILE COLON expr T_BEGIN stmt_list T_END {
       if(strcmp($3->typ,"BOOL")){ 
-        fprintf(stderr,"Error: Condition in while loop must be BOOL type\n"); 
-        exit(1); 
+        semantic_error("non-boolean condition in loop"); 
       }
       $$ = ast_new(N_WHILE,"WHILE",2,$3,$5);
     }
     
   | DO T_BEGIN stmt_list T_END WHILE expr SEMI {
       if(strcmp($6->typ,"BOOL")){ 
-        fprintf(stderr,"Error: Condition in do-while loop must be BOOL type\n"); 
-        exit(1); 
+        semantic_error("non-boolean condition in loop"); 
       }
       $$ = ast_new(N_DOWHILE,"DOWHILE",2,$3,$6);
     }
     
   | FOR ID ASSIGN expr TO expr COLON T_BEGIN stmt_list T_END {
       if(strcmp($4->typ,"INT")||strcmp($6->typ,"INT")){
-        fprintf(stderr,"Error: For loop bounds must be INT type\n"); 
-        exit(1);
+        semantic_error("for loop bounds must be INT type"); 
       }
       AST *loop_var = ast_new(N_ID, $2, 0);
       loop_var->typ = strdup("INT");
@@ -782,13 +761,12 @@ stmt
     
   | RETURN expr SEMI {
       if(cur_ret_type && !types_compatible(cur_ret_type,$2->typ)){
-        fprintf(stderr,"Error: Return type mismatch - expected %s, got %s\n",
-                cur_ret_type,$2->typ);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "return type mismatch - expected %s, got %s", cur_ret_type, $2->typ);
+        semantic_error(error_msg);
       }
-      if(!strcmp($2->typ,"STRING")){
-        fprintf(stderr,"Error: Cannot return STRING type\n"); 
-        exit(1);
+      if(strstr($2->typ,"[]")){
+        semantic_error("functions cannot return array types"); 
       }
       if (cur_ret_type && strcmp(cur_ret_type, "REAL") == 0 && strcmp($2->typ, "INT") == 0) {
         free($2->typ);
@@ -797,10 +775,9 @@ stmt
       $$ = ast_new(N_RET,"RET",1,$2);
     }
     
-  /* Handle invalid left-hand side assignments like 3+6 = 9 */
+  /* Handle invalid left-hand side assignments */
   | expr ASSIGN expr SEMI {
-      fprintf(stderr, "Error: Invalid left-hand side in assignment\n");
-      exit(1);
+      semantic_error("invalid left-hand side in assignment");
     }
   ;
 
@@ -810,22 +787,19 @@ stmt
 if_stmt
   : IF expr COLON T_BEGIN stmt_list T_END %prec ELSE {
       if (strcmp($2->typ, "BOOL")) {
-        fprintf(stderr, "Error: Condition in if statement must be BOOL type\n");
-        exit(1);
+        semantic_error("non-boolean condition in if");
       }
       $$ = ast_new(N_IFELSE, "", 2, $2, $5);
     }
   | IF expr COLON T_BEGIN stmt_list T_END ELSE COLON T_BEGIN stmt_list T_END {
       if(strcmp($2->typ,"BOOL")){ 
-        fprintf(stderr,"Error: Condition in if statement must be BOOL type\n"); 
-        exit(1); 
+        semantic_error("non-boolean condition in if"); 
       }
       $$ = ast_new(N_IFELSE,"",3,$2,$5,$10);
     }
   | IF expr COLON T_BEGIN stmt_list T_END elif_chain {
       if (strcmp($2->typ, "BOOL")) {
-        fprintf(stderr, "Error: Condition in if statement must be BOOL type\n");
-        exit(1);
+        semantic_error("non-boolean condition in if");
       }
       $$ = ast_new(N_IFELSE, "", 3, $2, $5, $7);
     }
@@ -834,22 +808,19 @@ if_stmt
 elif_chain
   : ELIF expr COLON T_BEGIN stmt_list T_END %prec ELSE {
       if (strcmp($2->typ, "BOOL")) {
-        fprintf(stderr, "Error: Condition in elif statement must be BOOL type\n");
-        exit(1);
+        semantic_error("non-boolean condition in elif");
       }
       $$ = ast_new(N_IFELSE, "", 2, $2, $5);
     }
   | ELIF expr COLON T_BEGIN stmt_list T_END ELSE COLON T_BEGIN stmt_list T_END {
       if (strcmp($2->typ, "BOOL")) {
-        fprintf(stderr, "Error: Condition in elif statement must be BOOL type\n");
-        exit(1);
+        semantic_error("non-boolean condition in elif");
       }
       $$ = ast_new(N_IFELSE, "", 3, $2, $5, $10);
     }
   | ELIF expr COLON T_BEGIN stmt_list T_END elif_chain {
       if (strcmp($2->typ, "BOOL")) {
-        fprintf(stderr, "Error: Condition in elif statement must be BOOL type\n");
-        exit(1);
+        semantic_error("non-boolean condition in elif");
       }
       AST *elif_branch = ast_new(N_IFELSE, "", 3, $2, $5, $7);
       $$ = elif_branch;
@@ -882,8 +853,7 @@ expr
   : primary_expr { $$ = $1; }
   | expr OR_OR expr    {
       if(strcmp($1->typ,"BOOL")||strcmp($3->typ,"BOOL")){
-        fprintf(stderr,"Error: Logical OR operator requires BOOL operands\n"); 
-        exit(1);
+        semantic_error("type error in logical operator"); 
       }
       AST *z = ast_new(N_BINOP,"||",2,$1,$3);
       z->typ = strdup("BOOL"); $$ = z;
@@ -891,8 +861,7 @@ expr
     
   | expr AND_AND expr  {
       if(strcmp($1->typ,"BOOL")||strcmp($3->typ,"BOOL")){
-        fprintf(stderr,"Error: Logical AND operator requires BOOL operands\n"); 
-        exit(1);
+        semantic_error("type error in logical operator"); 
       }
       AST *z = ast_new(N_BINOP,"&&",2,$1,$3);
       z->typ = strdup("BOOL"); $$ = z;
@@ -900,8 +869,7 @@ expr
     
   | NOT expr %prec NOT {
       if(strcmp($2->typ,"BOOL")){ 
-        fprintf(stderr,"Error: Logical NOT operator requires BOOL operand\n"); 
-        exit(1); 
+        semantic_error("invalid operand to logical-not operator"); 
       }
       AST *z = ast_new(N_UNOP,"!",1,$2);
       z->typ = strdup("BOOL"); $$ = z;
@@ -918,8 +886,7 @@ expr
         AST*z=ast_new(N_BINOP,"+",2,$1,$3); 
         z->typ=strdup("REAL"); $$ = z;
       } else {
-        fprintf(stderr,"Error: Addition operator requires INT or REAL operands\n"); 
-        exit(1);
+        semantic_error("arithmetic operator requires INT or REAL operands"); 
       }
     }
     
@@ -934,8 +901,7 @@ expr
         AST*z=ast_new(N_BINOP,"-",2,$1,$3); 
         z->typ=strdup("REAL"); $$ = z;
       } else {
-        fprintf(stderr,"Error: Subtraction operator requires INT or REAL operands\n"); 
-        exit(1);
+        semantic_error("arithmetic operator requires INT or REAL operands"); 
       }
     }
     
@@ -950,8 +916,7 @@ expr
         AST*z=ast_new(N_BINOP,"*",2,$1,$3); 
         z->typ=strdup("REAL"); $$ = z;
       } else {
-        fprintf(stderr,"Error: Multiplication operator requires INT or REAL operands\n"); 
-        exit(1);
+        semantic_error("arithmetic operator requires INT or REAL operands"); 
       }
     }
     
@@ -966,8 +931,7 @@ expr
         AST*z=ast_new(N_BINOP,"/",2,$1,$3); 
         z->typ=strdup("REAL"); $$ = z;
       } else {
-        fprintf(stderr,"Error: Division operator requires INT or REAL operands\n"); 
-        exit(1);
+        semantic_error("arithmetic operator requires INT or REAL operands"); 
       }
     }
     
@@ -975,8 +939,7 @@ expr
       int ok1=!strcmp($1->typ,"INT")||!strcmp($1->typ,"REAL");
       int ok3=!strcmp($3->typ,"INT")||!strcmp($3->typ,"REAL");
       if(!ok1||!ok3){ 
-        fprintf(stderr,"Error: Comparison operator requires INT or REAL operands\n"); 
-        exit(1); 
+        semantic_error("comparison operator requires INT or REAL operands"); 
       }
       AST*z=ast_new(N_BINOP,">",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
@@ -986,8 +949,7 @@ expr
       int ok1=!strcmp($1->typ,"INT")||!strcmp($1->typ,"REAL");
       int ok3=!strcmp($3->typ,"INT")||!strcmp($3->typ,"REAL");
       if(!ok1||!ok3){ 
-        fprintf(stderr,"Error: Comparison operator requires INT or REAL operands\n"); 
-        exit(1); 
+        semantic_error("comparison operator requires INT or REAL operands"); 
       }
       AST*z=ast_new(N_BINOP,"<",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
@@ -997,8 +959,7 @@ expr
       int ok1=!strcmp($1->typ,"INT")||!strcmp($1->typ,"REAL");
       int ok3=!strcmp($3->typ,"INT")||!strcmp($3->typ,"REAL");
       if(!ok1||!ok3){ 
-        fprintf(stderr,"Error: Comparison operator requires INT or REAL operands\n"); 
-        exit(1); 
+        semantic_error("comparison operator requires INT or REAL operands"); 
       }
       AST*z=ast_new(N_BINOP,">=",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
@@ -1008,8 +969,7 @@ expr
       int ok1=!strcmp($1->typ,"INT")||!strcmp($1->typ,"REAL");
       int ok3=!strcmp($3->typ,"INT")||!strcmp($3->typ,"REAL");
       if(!ok1||!ok3){ 
-        fprintf(stderr,"Error: Comparison operator requires INT or REAL operands\n"); 
-        exit(1); 
+        semantic_error("comparison operator requires INT or REAL operands"); 
       }
       AST*z=ast_new(N_BINOP,"<=",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
@@ -1022,8 +982,7 @@ expr
                      (!strcmp($1->typ,"REAL") && !strcmp($3->typ,"INT"));
       
       if(!(same || both_ptrs || int_real)){ 
-        fprintf(stderr,"Error: Equality operator requires compatible types\n"); 
-        exit(1); 
+        semantic_error("equality operator requires compatible types"); 
       }
       AST*z=ast_new(N_BINOP,"==",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
@@ -1036,17 +995,15 @@ expr
                      (!strcmp($1->typ,"REAL") && !strcmp($3->typ,"INT"));
       
       if(!(same || both_ptrs || int_real)){ 
-        fprintf(stderr,"Error: Inequality operator requires compatible types\n"); 
-        exit(1); 
+        semantic_error("inequality operator requires compatible types"); 
       }
       AST*z=ast_new(N_BINOP,"!=",2,$1,$3); 
       z->typ=strdup("BOOL"); $$ = z;
     }
     
   | BAR expr BAR        {
-      if(strcmp($2->typ,"STRING") && !strstr($2->typ, "STRING[]")){ 
-        fprintf(stderr,"Error: Absolute value operator can only be applied to STRING\n"); 
-        exit(1); 
+      if(strcmp($2->typ,"INT")){ 
+        semantic_error("invalid operand to absolute-value operator"); 
       }
       AST*z=ast_new(N_UNOP,"| |",1,$2); 
       z->typ=strdup("INT"); $$ = z;
@@ -1054,12 +1011,10 @@ expr
     
   | expr LBRACK expr RBRACK {
       if(strcmp($1->typ,"STRING") && !strstr($1->typ, "STRING[]")){ 
-        fprintf(stderr,"Error: Indexing can only be applied to STRING or STRING[] type\n"); 
-        exit(1); 
+        semantic_error("indexing can only be applied to STRING type"); 
       }
       if(strcmp($3->typ,"INT")){ 
-        fprintf(stderr,"Error: Array index must be INT type\n"); 
-        exit(1); 
+        semantic_error("array index must be INT type"); 
       }
       AST*z=ast_new(N_INDEX,"[]",2,$1,$3); 
       z->typ=strdup("CHAR"); $$ = z;
@@ -1067,8 +1022,7 @@ expr
     
   | '*' expr {
       if(strncmp($2->typ,"PTR(",4)){ 
-        fprintf(stderr,"Error: Dereference operator can only be applied to pointer types\n"); 
-        exit(1); 
+        semantic_error("invalid dereference"); 
       }
       char *inner = strdup($2->typ+4);
       inner[strlen(inner)-1] = 0;
@@ -1113,8 +1067,9 @@ primary_expr
   | variable {
       Sym *s = lookup($1->lexeme);
       if(!s){ 
-        fprintf(stderr,"Error: Variable `%s` not declared\n",$1->lexeme); 
-        exit(1); 
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
+        semantic_error(error_msg); 
       }
       $1->typ = strdup(s->type); 
       $$ = $1;
@@ -1125,17 +1080,16 @@ primary_expr
   | '&' variable {
       Sym *s = lookup($2->lexeme);
       if (!s) {
-        fprintf(stderr,"Error: Variable `%s` not declared\n",$2->lexeme);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $2->lexeme);
+        semantic_error(error_msg);
       }
       if (s->kind != SYM_VAR && s->kind != SYM_PARAM) {
-        fprintf(stderr,"Error: Address-of operator can only be applied to variables\n");
-        exit(1);
+        semantic_error("address-of operator can only be applied to variables");
       }
       if (strcmp(s->type, "INT") && strcmp(s->type, "REAL") && 
           strcmp(s->type, "CHAR") && strcmp(s->type, "STRING")) {
-        fprintf(stderr,"Error: Address-of operator can only be applied to INT, REAL, CHAR, or STRING variables\n");
-        exit(1);
+        semantic_error("address-of operator can only be applied to INT, REAL, CHAR, or STRING variables");
       }
       AST *z = ast_new(N_UNOP, "&", 1, $2);
       z->typ = malloc(strlen(s->type) + 8);
@@ -1146,16 +1100,15 @@ primary_expr
   | '&' variable LBRACK expr RBRACK {
       Sym *s = lookup($2->lexeme);
       if (!s) {
-        fprintf(stderr,"Error: Variable `%s` not declared\n",$2->lexeme);
-        exit(1);
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $2->lexeme);
+        semantic_error(error_msg);
       }
       if (strcmp(s->type, "STRING") && !strstr(s->type, "STRING[]")) {
-        fprintf(stderr,"Error: Address-of operator on index requires STRING or STRING[]\n");
-        exit(1);
+        semantic_error("address-of operator on index requires STRING type");
       }
       if (strcmp($4->typ, "INT")) {
-        fprintf(stderr,"Error: Array index must be INT type\n");
-        exit(1);
+        semantic_error("array index must be INT type");
       }
       $2->typ = strdup("STRING");
       AST *index_node = ast_new(N_INDEX, "[]", 2, $2, $4);
@@ -1175,7 +1128,7 @@ primary_expr
       FuncDecl *fd = find_func_declaration($2);
       
       if ((!s || s->kind != SYM_FUNC) && !fd) { 
-        if (cur_func_name && strcmp(cur_func_name, "main") != 0 && parsing_functions) {
+        if (cur_func_name && strcmp(cur_func_name, "_main_") != 0 && parsing_functions) {
           char **param_types = NULL;
           if ($4->n > 0) {
             param_types = malloc($4->n * sizeof(char*));
@@ -1191,8 +1144,9 @@ primary_expr
           call->typ=strdup("BOOL");
           $$ = call;
         } else {
-          fprintf(stderr, "Error: Function `%s` not defined\n", $2);
-          exit(1);
+          char error_msg[256];
+          snprintf(error_msg, sizeof(error_msg), "function '%s' used before definition", $2);
+          semantic_error(error_msg);
         }
       } else {
         int expected_params = (s && s->kind == SYM_FUNC) ? s->param_count : fd->param_count;
@@ -1200,9 +1154,9 @@ primary_expr
         char *return_type = (s && s->kind == SYM_FUNC) ? s->type : fd->return_type;
         
         if(expected_params != $4->n){ 
-          fprintf(stderr,"Error: Function `%s` expects %d parameters, got %d\n",
-                  $2, expected_params, $4->n); 
-          exit(1); 
+          char error_msg[256];
+          snprintf(error_msg, sizeof(error_msg), "wrong number of arguments in call to '%s'", $2);
+          semantic_error(error_msg); 
         }
         
         for(int i=0;i<$4->n;i++){
@@ -1212,9 +1166,10 @@ primary_expr
           }
           
           if(!types_compatible(expected_types[i], $4->c[i]->typ)){
-            fprintf(stderr,"Error: Parameter %d of function `%s` should be %s, got %s\n",
-                    i+1,$2,expected_types[i],$4->c[i]->typ);
-            exit(1);
+            char error_msg[256];
+            snprintf(error_msg, sizeof(error_msg), "type mismatch in argument %d of call to '%s' (expected %s, found %s)",
+                     i+1, $2, expected_types[i], $4->c[i]->typ);
+            semantic_error(error_msg);
           }
           
           if (strcmp(expected_types[i], "REAL") == 0 && strcmp($4->c[i]->typ, "INT") == 0) {
