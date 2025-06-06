@@ -309,6 +309,7 @@
     if_stmt
     elif_chain
     variable
+    lvalue
 %%
 
 /*----------------------------------------------------------------------*/
@@ -631,6 +632,45 @@ type
   ;
 
 /*----------------------------------------------------------------------*/
+/* Left-hand side values for assignment                                 */
+/*----------------------------------------------------------------------*/
+lvalue
+  : variable {
+      Sym *s = lookup($1->lexeme);
+      if (!s) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
+        semantic_error(error_msg);
+      }
+      $1->typ = strdup(s->type);
+      $$ = $1;
+    }
+  | '*' expr {
+      if (strncmp($2->typ, "PTR(", 4)) {
+        semantic_error("invalid dereference");
+      }
+      char *inner = strdup($2->typ + 4);
+      inner[strlen(inner) - 1] = 0;
+      
+      AST *deref_node = ast_new(N_UNOP, "*", 1, $2);
+      deref_node->typ = strdup(inner);
+      $$ = deref_node;
+    }
+  | expr LBRACK expr RBRACK {
+      if (strcmp($1->typ, "STRING") && !strstr($1->typ, "STRING[]")) {
+        semantic_error("indexing can only be applied to STRING or STRING[] type");
+      }
+      if (strcmp($3->typ, "INT")) {
+        semantic_error("array index must be INT type");
+      }
+      
+      AST *index_node = ast_new(N_INDEX, "[]", 2, $1, $3);
+      index_node->typ = strdup("CHAR");
+      $$ = index_node;
+    }
+  ;
+
+/*----------------------------------------------------------------------*/
 /* Variable reference                                                   */
 /*----------------------------------------------------------------------*/
 variable
@@ -666,67 +706,8 @@ stmt
       $$ = $3;
     }
   
-  | variable ASSIGN expr SEMI {
-      Sym *s = lookup($1->lexeme);
-      if (!s) {
-        char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "variable '%s' used before definition", $1->lexeme);
-        semantic_error(error_msg);
-      }
-
-      if (!types_compatible(s->type, $3->typ)) {
-        char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", s->type, $3->typ);
-        semantic_error(error_msg);
-      }
-
-      if (strcmp(s->type, "REAL") == 0 && strcmp($3->typ, "INT") == 0) {
-        free($3->typ);
-        $3->typ = strdup("REAL");
-      }
-
+  | lvalue ASSIGN expr SEMI {
       $$ = ast_new(N_ASSIGN, "=", 2, $1, $3);
-    }
-
-  | '*' expr ASSIGN expr SEMI {
-      if (strncmp($2->typ, "PTR(", 4)) {
-        semantic_error("invalid dereference");
-      }
-      char *inner = strdup($2->typ + 4);
-      inner[strlen(inner) - 1] = 0;
-      
-      if (!types_compatible(inner, $4->typ)) {
-        char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "type mismatch in assignment (expected %s, found %s)", inner, $4->typ);
-        free(inner);
-        semantic_error(error_msg);
-      }
-      
-      if (strcmp(inner, "REAL") == 0 && strcmp($4->typ, "INT") == 0) {
-        free($4->typ);
-        $4->typ = strdup("REAL");
-      }
-      
-      AST *deref_node = ast_new(N_UNOP, "*", 1, $2);
-      deref_node->typ = strdup(inner);
-      $$ = ast_new(N_ASSIGN, "=", 2, deref_node, $4);
-      free(inner);
-    }
-
-  | expr LBRACK expr RBRACK ASSIGN expr SEMI {
-      if (strcmp($1->typ, "STRING") && !strstr($1->typ, "STRING[]")) {
-        semantic_error("indexing can only be applied to STRING or STRING[] type");
-      }
-      if (strcmp($3->typ, "INT")) {
-        semantic_error("array index must be INT type");
-      }
-      if (strcmp($6->typ, "CHAR")) {
-        semantic_error("can only assign CHAR to string element");
-      }
-      
-      AST *index_node = ast_new(N_INDEX, "[]", 2, $1, $3);
-      index_node->typ = strdup("CHAR");
-      $$ = ast_new(N_ASSIGN, "=", 2, index_node, $6);
     }
 
   | if_stmt { $$ = $1; }
@@ -773,11 +754,6 @@ stmt
         $2->typ = strdup("REAL");
       }
       $$ = ast_new(N_RET,"RET",1,$2);
-    }
-    
-  /* Handle invalid left-hand side assignments */
-  | expr ASSIGN expr SEMI {
-      semantic_error("invalid left-hand side in assignment");
     }
   ;
 
