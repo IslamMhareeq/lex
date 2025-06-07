@@ -1,0 +1,17 @@
+# Makefile
+
+# Default target: build semc
+semc: parser.tab.c lex.yy.c
+	gcc -o $@ parser.tab.c lex.yy.c -lfl
+
+# Bison generates parser.tab.c and parser.tab.h
+parser.tab.c parser.tab.h: parser.y
+	bison -d parser.y
+
+# Flex generates lex.yy.c
+lex.yy.c: scanner.l
+	flex scanner.l
+
+# Clean up all generated files
+clean:
+	rm -f semc parser.tab.c parser.tab.h lex.yy.c
