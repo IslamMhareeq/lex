@@ -1,4 +1,4 @@
-/* parser.y - Updated for complete semantic rules compliance */
+/* parser.y - Enhanced with 3AC Code Generation for Part 3 */
 
 %define parse.error verbose
 %expect 3
@@ -10,6 +10,7 @@
   #include <stdlib.h>
   #include <string.h>
   #include <ctype.h>
+  #include <stdio.h>
 
   typedef enum {
     N_FUNC, N_PARS, N_PARAM, N_RET,
@@ -43,6 +44,15 @@
     Sym         *symbols;
     struct Scope *next;
   } Scope;
+
+  /* 3AC Generation structures */
+  typedef struct CodeGenContext {
+    int temp_counter;
+    int label_counter;
+    FILE *output;
+    int local_var_count;
+    int total_frame_size;
+  } CodeGenContext;
 }
 
 /*----------------------------------------------------------------------*/
@@ -61,6 +71,9 @@
   static int parsing_functions = 1;
   static int semantic_error_found = 0;
 
+  /* 3AC Generation globals */
+  static CodeGenContext *current_context = NULL;
+  
   typedef struct FuncDecl {
     char *name;
     int param_count;
@@ -84,6 +97,362 @@
     fprintf(stderr, "Semantic Error: %s\n", msg);
     semantic_error_found = 1;
     exit(1);
+  }
+
+  /* 3AC Generation functions */
+  char* generate_temp() {
+    char *temp = malloc(16);
+    snprintf(temp, 16, "t%d", current_context->temp_counter++);
+    return temp;
+  }
+
+  char* generate_label() {
+    char *label = malloc(16);
+    snprintf(label, 16, "L%d", current_context->label_counter++);
+    return label;
+  }
+
+  void emit(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    fprintf(current_context->output, "  ");
+    vfprintf(current_context->output, format, args);
+    fprintf(current_context->output, "\n");
+    va_end(args);
+  }
+
+  void emit_label(const char *label) {
+    fprintf(current_context->output, "%s:\n", label);
+  }
+
+  void emit_function_header(const char *func_name) {
+    fprintf(current_context->output, "%s:\n", func_name);
+  }
+
+  int get_type_size(const char *type) {
+    if (!type) return 4;
+    if (strcmp(type, "INT") == 0) return 4;
+    if (strcmp(type, "REAL") == 0) return 8;
+    if (strcmp(type, "BOOL") == 0) return 4;
+    if (strcmp(type, "CHAR") == 0) return 1;
+    if (strcmp(type, "STRING") == 0) return 8; // pointer
+    if (strncmp(type, "PTR(", 4) == 0) return 8; // pointer
+    if (strstr(type, "[]") != NULL) return 8; // array pointer
+    return 4; // default
+  }
+
+  int calculate_local_vars_size() {
+    int total_size = 0;
+    for (Scope *sc = scope_stack; sc; sc = sc->next) {
+      for (Sym *p = sc->symbols; p; p = p->next) {
+        if (p->kind == SYM_VAR) {
+          total_size += get_type_size(p->type);
+        }
+      }
+    }
+    return total_size;
+  }
+
+  char* codegen_expr(AST *expr);
+  void codegen_stmt(AST *stmt);
+  void codegen_stmt_list(AST *stmt_list);
+
+  char* codegen_expr(AST *expr) {
+    if (!expr) return NULL;
+
+    switch (expr->type) {
+      case N_LIT: {
+        char *temp = generate_temp();
+        emit("%s = %s", temp, expr->lexeme);
+        return temp;
+      }
+
+      case N_ID: {
+        // For variables, we can return the variable name directly
+        return strdup(expr->lexeme);
+      }
+
+      case N_BINOP: {
+        // Handle short-circuit evaluation for && and ||
+        if (strcmp(expr->lexeme, "&&") == 0) {
+          char *left = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          char *label_false = generate_label();
+          char *label_end = generate_label();
+          
+          emit("if %s == 0 goto %s", left, label_false);
+          char *right = codegen_expr(expr->c[1]);
+          emit("%s = %s", temp, right);
+          emit("goto %s", label_end);
+          emit_label(label_false);
+          emit("%s = 0", temp);
+          emit_label(label_end);
+          
+          free(left);
+          free(right);
+          free(label_false);
+          free(label_end);
+          return temp;
+        }
+        
+        if (strcmp(expr->lexeme, "||") == 0) {
+          char *left = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          char *label_true = generate_label();
+          char *label_end = generate_label();
+          
+          emit("if %s != 0 goto %s", left, label_true);
+          char *right = codegen_expr(expr->c[1]);
+          emit("%s = %s", temp, right);
+          emit("goto %s", label_end);
+          emit_label(label_true);
+          emit("%s = 1", temp);
+          emit_label(label_end);
+          
+          free(left);
+          free(right);
+          free(label_true);
+          free(label_end);
+          return temp;
+        }
+
+        // Regular binary operations
+        char *left = codegen_expr(expr->c[0]);
+        char *right = codegen_expr(expr->c[1]);
+        char *temp = generate_temp();
+        emit("%s = %s %s %s", temp, left, expr->lexeme, right);
+        free(left);
+        free(right);
+        return temp;
+      }
+
+      case N_UNOP: {
+        if (strcmp(expr->lexeme, "| |") == 0) {
+          char *operand = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          emit("%s = abs(%s)", temp, operand);
+          free(operand);
+          return temp;
+        } else if (strcmp(expr->lexeme, "!") == 0) {
+          char *operand = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          emit("%s = !%s", temp, operand);
+          free(operand);
+          return temp;
+        } else if (strcmp(expr->lexeme, "*") == 0) {
+          char *operand = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          emit("%s = *%s", temp, operand);
+          free(operand);
+          return temp;
+        } else if (strcmp(expr->lexeme, "&") == 0) {
+          char *operand = codegen_expr(expr->c[0]);
+          char *temp = generate_temp();
+          emit("%s = &%s", temp, operand);
+          free(operand);
+          return temp;
+        }
+        break;
+      }
+
+      case N_CALL: {
+        // Generate code for function call
+        char *temp_result = generate_temp();
+        
+        // Generate temps for arguments and push them
+        for (int i = 0; i < expr->n; i++) {
+          char *arg_temp = codegen_expr(expr->c[i]);
+          emit("PushParam %s", arg_temp);
+          free(arg_temp);
+        }
+        
+        emit("%s = LCall %s", temp_result, expr->lexeme);
+        emit("PopParams %d", expr->n * 4); // Assuming 4 bytes per param
+        
+        return temp_result;
+      }
+
+      case N_INDEX: {
+        char *array = codegen_expr(expr->c[0]);
+        char *index = codegen_expr(expr->c[1]);
+        char *temp = generate_temp();
+        emit("%s = %s[%s]", temp, array, index);
+        free(array);
+        free(index);
+        return temp;
+      }
+
+      default:
+        return NULL;
+    }
+    
+    return NULL;
+  }
+
+  void codegen_stmt(AST *stmt) {
+    if (!stmt) return;
+
+    switch (stmt->type) {
+      case N_ASSIGN: {
+        char *rhs = codegen_expr(stmt->c[1]);
+        if (stmt->c[0]->type == N_ID) {
+          emit("%s = %s", stmt->c[0]->lexeme, rhs);
+        } else if (stmt->c[0]->type == N_INDEX) {
+          char *array = codegen_expr(stmt->c[0]->c[0]);
+          char *index = codegen_expr(stmt->c[0]->c[1]);
+          emit("%s[%s] = %s", array, index, rhs);
+          free(array);
+          free(index);
+        } else if (stmt->c[0]->type == N_UNOP && strcmp(stmt->c[0]->lexeme, "*") == 0) {
+          char *ptr = codegen_expr(stmt->c[0]->c[0]);
+          emit("*%s = %s", ptr, rhs);
+          free(ptr);
+        }
+        free(rhs);
+        break;
+      }
+
+      case N_IFELSE: {
+        char *cond = codegen_expr(stmt->c[0]);
+        char *label_else = generate_label();
+        char *label_end = generate_label();
+        
+        emit("if %s == 0 goto %s", cond, label_else);
+        codegen_stmt_list(stmt->c[1]); // then branch
+        
+        if (stmt->n > 2) { // has else branch
+          emit("goto %s", label_end);
+          emit_label(label_else);
+          codegen_stmt_list(stmt->c[2]); // else branch
+          emit_label(label_end);
+        } else {
+          emit_label(label_else);
+        }
+        
+        free(cond);
+        free(label_else);
+        free(label_end);
+        break;
+      }
+
+      case N_WHILE: {
+        char *label_start = generate_label();
+        char *label_end = generate_label();
+        
+        emit_label(label_start);
+        char *cond = codegen_expr(stmt->c[0]);
+        emit("if %s == 0 goto %s", cond, label_end);
+        codegen_stmt_list(stmt->c[1]); // body
+        emit("goto %s", label_start);
+        emit_label(label_end);
+        
+        free(cond);
+        free(label_start);
+        free(label_end);
+        break;
+      }
+
+      case N_FOR: {
+        char *label_start = generate_label();
+        char *label_end = generate_label();
+        
+        // Initialize loop variable
+        char *start_val = codegen_expr(stmt->c[1]);
+        emit("%s = %s", stmt->c[0]->lexeme, start_val);
+        
+        emit_label(label_start);
+        // Check condition
+        char *end_val = codegen_expr(stmt->c[2]);
+        emit("if %s > %s goto %s", stmt->c[0]->lexeme, end_val, label_end);
+        
+        codegen_stmt_list(stmt->c[3]); // body
+        
+        // Increment loop variable
+        emit("%s = %s + 1", stmt->c[0]->lexeme, stmt->c[0]->lexeme);
+        emit("goto %s", label_start);
+        emit_label(label_end);
+        
+        free(start_val);
+        free(end_val);
+        free(label_start);
+        free(label_end);
+        break;
+      }
+
+      case N_RET: {
+        if (stmt->c[0]) {
+          char *ret_val = codegen_expr(stmt->c[0]);
+          emit("Return %s", ret_val);
+          free(ret_val);
+        } else {
+          emit("Return");
+        }
+        break;
+      }
+
+      case N_CALL: {
+        // Handle call as statement (no assignment)
+        for (int i = 0; i < stmt->n; i++) {
+          char *arg_temp = codegen_expr(stmt->c[i]);
+          emit("PushParam %s", arg_temp);
+          free(arg_temp);
+        }
+        emit("LCall %s", stmt->lexeme);
+        emit("PopParams %d", stmt->n * 4);
+        break;
+      }
+
+      case N_BLOCK: {
+        codegen_stmt_list(stmt);
+        break;
+      }
+
+      default:
+        // Handle other statement types or expressions as statements
+        if (stmt->type == N_BINOP || stmt->type == N_UNOP || 
+            stmt->type == N_LIT || stmt->type == N_ID) {
+          char *temp = codegen_expr(stmt);
+          free(temp); // Expression evaluated but result not used
+        }
+        break;
+    }
+  }
+
+  void codegen_stmt_list(AST *stmt_list) {
+    if (!stmt_list) return;
+    
+    for (int i = 0; i < stmt_list->n; i++) {
+      codegen_stmt(stmt_list->c[i]);
+    }
+  }
+
+  void codegen_function(AST *func) {
+    if (!func || func->type != N_FUNC) return;
+    
+    AST *name = func->c[0];
+    AST *params = func->c[1];
+    AST *ret_type = func->c[2];
+    AST *body = func->c[3];
+    
+    // Reset context for this function
+    current_context->temp_counter = 0;
+    current_context->label_counter = 1;
+    
+    // Calculate frame size (simplified - local vars + space for temporaries)
+    int local_size = calculate_local_vars_size();
+    int temp_space = 100 * 4; // Space for 100 temporaries (rough estimate)
+    current_context->total_frame_size = local_size + temp_space;
+    
+    // Emit function header
+    emit_function_header(name->lexeme);
+    emit("BeginFunc %d", current_context->total_frame_size);
+    
+    // Generate code for function body
+    codegen_stmt_list(body);
+    
+    // Emit function footer
+    emit("EndFunc");
+    fprintf(current_context->output, "\n"); // Blank line between functions
   }
   
   void add_unresolved_call(const char *name, int pc, char **ptypes) {
@@ -457,7 +826,10 @@ func
       AST *rv = ast_new(N_RET, cur_ret_type, 1,
                         ast_new(N_ID, cur_ret_type, 0));
       AST *f  = ast_new(N_FUNC, "FUNC", 4, nm, ps, rv, body);
-      print_node(f, 1);
+      
+      // Generate 3AC for this function
+      codegen_function(f);
+      
       free_node(f);
 
       free(cur_ret_type);     cur_ret_type     = NULL;
@@ -474,7 +846,10 @@ func
       AST *rv = ast_new(N_RET, "NONE", 1,
                         ast_new(N_ID, "NONE", 0));
       AST *f  = ast_new(N_FUNC, "FUNC", 4, nm, ps, rv, body);
-      print_node(f, 1);
+      
+      // Generate 3AC for this function
+      codegen_function(f);
+      
       free_node(f);
 
       free(cur_ret_type);     cur_ret_type     = NULL;
@@ -982,6 +1357,12 @@ expr
         semantic_error("arithmetic operator requires INT or REAL operands"); 
       }
     }
+  | '-' expr %prec UMINUS {
+    // Handle unary minus
+    AST *z = ast_new(N_UNOP, "-", 1, $2);
+    z->typ = strdup($2->typ);
+    $$ = z;
+}  
     
   | expr GT expr        {
       int ok1=!strcmp($1->typ,"INT")||!strcmp($1->typ,"REAL");
@@ -1279,5 +1660,16 @@ void free_node(AST *z) {
 }
 
 int main(void) {
-    return yyparse();
+    // Initialize 3AC generation context
+    current_context = malloc(sizeof(CodeGenContext));
+    current_context->temp_counter = 0;
+    current_context->label_counter = 1;
+    current_context->output = stdout;
+    current_context->local_var_count = 0;
+    current_context->total_frame_size = 0;
+    
+    int result = yyparse();
+    
+    free(current_context);
+    return result;
 }
