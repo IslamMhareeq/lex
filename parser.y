@@ -60,6 +60,7 @@
   static int main_count = 0;
   static int parsing_functions = 1;
   static int semantic_error_found = 0;
+  static int first_function = 1;
 
   typedef struct FuncDecl {
     char *name;
@@ -336,6 +337,10 @@ program
       
       validate_unresolved_calls();
       exit_scope();
+      
+      if (!first_function) {
+        printf(")\n");  // Close the CODE wrapper
+      }
     }
   ;
 
@@ -450,6 +455,11 @@ functions
 func
   : func_prologue_with_ret func_body
     {
+      if (first_function) {
+        printf("(CODE\n");
+        first_function = 0;
+      }
+      
       exit_scope();
       AST *body = $2;
       AST *nm = ast_new(N_ID, cur_func_name, 0);
@@ -457,7 +467,9 @@ func
       AST *rv = ast_new(N_RET, cur_ret_type, 1,
                         ast_new(N_ID, cur_ret_type, 0));
       AST *f  = ast_new(N_FUNC, "FUNC", 4, nm, ps, rv, body);
+      printf("    ");  // indent for the function
       print_node(f, 1);
+      printf("\n");
       free_node(f);
 
       free(cur_ret_type);     cur_ret_type     = NULL;
@@ -467,6 +479,11 @@ func
 
   | func_prologue_no_ret func_body
     {
+      if (first_function) {
+        printf("(CODE\n");
+        first_function = 0;
+      }
+      
       exit_scope();
       AST *body = $2;
       AST *nm = ast_new(N_ID, cur_func_name, 0);
@@ -474,7 +491,9 @@ func
       AST *rv = ast_new(N_RET, "NONE", 1,
                         ast_new(N_ID, "NONE", 0));
       AST *f  = ast_new(N_FUNC, "FUNC", 4, nm, ps, rv, body);
+      printf("    ");  // indent for the function
       print_node(f, 1);
+      printf("\n");
       free_node(f);
 
       free(cur_ret_type);     cur_ret_type     = NULL;
@@ -482,6 +501,7 @@ func
       cur_param_ast = NULL;
     }
   ;
+
 
 /*----------------------------------------------------------------------*/
 /* Function body (optional var declarations + begin/end block)         */
@@ -1243,30 +1263,208 @@ static const char *NodeTypeNames[] = {
     "ID", "LIT"
 };
 
-static void indent(int d) {
-    for (int i = 0; i < d; i++)
-        putchar(' ');
+static void indent(int depth) {
+    for (int i = 0; i < depth * 4; i++) {
+        printf(" ");
+    }
 }
 
 void print_node(AST *z, int d) {
     if (!z) return;
-    indent(d);
-
-    if (z->lexeme && strlen(z->lexeme) > 0) {
-        printf("%s", z->lexeme);
-    } else {
-        printf("%s", NodeTypeNames[z->type]);
+    
+    switch(z->type) {
+        case N_FUNC:
+            printf("(FUNC\n");
+            indent(d+1);
+            printf("%s\n", z->c[0]->lexeme);  // function name
+            indent(d+1);
+            print_node(z->c[1], d+1);  // parameters
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[2], d+1);  // return type
+            printf("\n");
+            indent(d+1);
+            printf("(BODY\n");
+            print_node(z->c[3], d+2);  // body
+            printf("\n");
+            indent(d+1);
+            printf(")\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_PARS:
+            printf("(PARS");
+            if (z->n == 0) {
+                printf(" NONE)");
+            } else {
+                for (int i = 0; i < z->n; i++) {
+                    printf("\n");
+                    indent(d+1);
+                    print_node(z->c[i], d+1);
+                }
+                printf("\n");
+                indent(d);
+                printf(")");
+            }
+            break;
+            
+        case N_PARAM:
+            if (z->typ && strlen(z->typ) > 0) {  // source parameter name (par1, par2, etc.)
+                printf("(%s %s %s)", z->typ, z->c[0]->lexeme, z->lexeme);
+            } else {
+                printf("(%s %s)", z->c[0]->lexeme, z->lexeme);
+            }
+            break;
+            
+        case N_RET:
+            printf("(RET %s)", z->lexeme);
+            break;
+            
+        case N_BLOCK:
+            printf("(BLOCK");
+            for (int i = 0; i < z->n; i++) {
+                printf("\n");
+                indent(d+1);
+                print_node(z->c[i], d+1);
+            }
+            if (z->n > 0) {
+                printf("\n");
+                indent(d);
+            }
+            printf(")");
+            break;
+            
+        case N_IFELSE:
+            printf("(IF-ELSE\n");
+            indent(d+1);
+            print_node(z->c[0], d+1);  // condition
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[1], d+1);  // then block
+            if (z->n > 2) {
+                printf("\n");
+                indent(d+1);
+                print_node(z->c[2], d+1);  // else block
+            }
+            printf("\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_ASSIGN:
+            printf("(= ");
+            print_node(z->c[0], d);
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[1], d+1);
+            printf("\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_BINOP:
+            printf("(%s ", z->lexeme);
+            print_node(z->c[0], d);
+            printf(" ");
+            print_node(z->c[1], d);
+            printf(")");
+            break;
+            
+        case N_UNOP:
+            printf("(%s ", z->lexeme);
+            print_node(z->c[0], d);
+            printf(")");
+            break;
+            
+        case N_CALL:
+            printf("(CALL %s", z->lexeme);
+            for (int i = 0; i < z->n; i++) {
+                printf(" ");
+                print_node(z->c[i], d);
+            }
+            printf(")");
+            break;
+            
+        case N_WHILE:
+            printf("(WHILE ");
+            print_node(z->c[0], d);  // condition
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[1], d+1);  // body
+            printf("\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_DOWHILE:
+            printf("(DOWHILE\n");
+            indent(d+1);
+            print_node(z->c[0], d+1);  // body
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[1], d+1);  // condition
+            printf("\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_FOR:
+            printf("(FOR ");
+            print_node(z->c[0], d);  // variable
+            printf(" ");
+            print_node(z->c[1], d);  // start
+            printf(" ");
+            print_node(z->c[2], d);  // end
+            printf("\n");
+            indent(d+1);
+            print_node(z->c[3], d+1);  // body
+            printf("\n");
+            indent(d);
+            printf(")");
+            break;
+            
+        case N_INDEX:
+            printf("([] ");
+            print_node(z->c[0], d);
+            printf(" ");
+            print_node(z->c[1], d);
+            printf(")");
+            break;
+            
+        case N_ID:
+            printf("%s", z->lexeme);
+            break;
+            
+        case N_LIT:
+            if (z->lexeme) {
+                printf("%s", z->lexeme);
+            } else {
+                printf("null");
+            }
+            break;
+            
+        default:
+            printf("(%s", NodeTypeNames[z->type]);
+            for (int i = 0; i < z->n; i++) {
+                printf("\n");
+                indent(d+1);
+                print_node(z->c[i], d+1);
+            }
+            if (z->n > 0) {
+                printf("\n");
+                indent(d);
+            }
+            printf(")");
+            break;
     }
-
-    if (z->typ && strlen(z->typ) > 0) {
-        printf(" : %s", z->typ);
-    }
-    putchar('\n');
-
-    for (int i = 0; i < z->n; i++)
-        print_node(z->c[i], d + 1);
 }
-
+// Also add this wrapper function to print the top-level CODE structure
+void print_program() {
+    printf("(CODE ");
+    // The actual program tree will be printed by individual function calls
+    printf(")\n");
+}
 void free_node(AST *z) {
     if (!z) return;
     for (int i = 0; i < z->n; i++)
