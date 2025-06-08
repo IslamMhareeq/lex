@@ -1,120 +1,17 @@
-# Makefile for 3AC Code Generation Compiler
+# Makefile
 
-# Compiler settings
-CC = gcc
-CFLAGS = -Wall -Wextra -g -std=c99
-LDFLAGS = -lfl
+# Default target: build semc
+semc: parser.tab.c lex.yy.c
+	gcc -o $@ parser.tab.c lex.yy.c -lfl
 
-# Target executable
-TARGET = semc
-
-# Source files
-PARSER_SRC = parser.tab.c
-LEXER_SRC = lex.yy.c
-SOURCES = $(PARSER_SRC) $(LEXER_SRC)
-
-# Generated files
-PARSER_HEADER = parser.tab.h
-GENERATED_FILES = $(PARSER_SRC) $(PARSER_HEADER) $(LEXER_SRC)
-
-# Default target: build the compiler
-all: $(TARGET)
-
-# Build the main target
-$(TARGET): $(SOURCES)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-# Generate parser files with Bison
-$(PARSER_SRC) $(PARSER_HEADER): parser.y
+# Bison generates parser.tab.c and parser.tab.h
+parser.tab.c parser.tab.h: parser.y
 	bison -d parser.y
 
-# Generate lexer files with Flex
-$(LEXER_SRC): scanner.l $(PARSER_HEADER)
+# Flex generates lex.yy.c
+lex.yy.c: scanner.l
 	flex scanner.l
 
-# Test the compiler with sample programs
-test: $(TARGET)
-	@echo "=== Testing 3AC Code Generation ==="
-	@./test_3ac_generation.sh
-
-# Run comprehensive tests from Part 2
-test-semantic: $(TARGET)
-	@echo "=== Running Semantic Analysis Tests ==="
-	@./run_all_tests.sh
-
-# Run original test file analysis
-test-original: $(TARGET)
-	@echo "=== Running Original Test File Analysis ==="
-	@./original_test_runner.sh
-
-# Test a specific file
-test-file: $(TARGET)
-	@if [ -f "$(FILE)" ]; then \
-		echo "Testing file: $(FILE)"; \
-		./$(TARGET) < $(FILE); \
-	else \
-		echo "Usage: make test-file FILE=yourfile.semc"; \
-	fi
-
-# Clean up generated files
+# Clean up all generated files
 clean:
-	rm -f $(TARGET) $(GENERATED_FILES)
-
-# Clean and rebuild
-rebuild: clean all
-
-# Create a sample test file
-sample:
-	@cat > sample.semc << 'EOF'
-	def factorial(par1 int:n): returns int
-	var type int: result;
-	begin
-	    if n <= 1:
-	    begin
-	        return 1;
-	    end
-	    else:
-	    begin
-	        result = call factorial(n - 1);
-	        return n * result;
-	    end
-	end
-	
-	def _main_():
-	var type int: fact5;
-	begin
-	    fact5 = call factorial(5);
-	    call print(fact5);
-	end
-	EOF
-	@echo "Created sample.semc with factorial example"
-	@echo "Run: make test-file FILE=sample.semc"
-
-# Install (copy to system directory)
-install: $(TARGET)
-	@echo "Installing $(TARGET) to /usr/local/bin/"
-	@sudo cp $(TARGET) /usr/local/bin/
-	@echo "Installation complete"
-
-# Show help
-help:
-	@echo "Available targets:"
-	@echo "  all           - Build the compiler"
-	@echo "  test          - Run 3AC generation tests"
-	@echo "  test-semantic - Run semantic analysis tests"
-	@echo "  test-original - Run original test file analysis"
-	@echo "  test-file     - Test specific file (use FILE=filename)"
-	@echo "  sample        - Create a sample test file"
-	@echo "  clean         - Remove generated files"
-	@echo "  rebuild       - Clean and rebuild"
-	@echo "  install       - Install to system (requires sudo)"
-	@echo "  help          - Show this help message"
-
-# Declare phony targets
-.PHONY: all test test-semantic test-original test-file clean rebuild sample install help
-
-# Debug information
-debug:
-	@echo "Sources: $(SOURCES)"
-	@echo "Target: $(TARGET)"
-	@echo "Generated files: $(GENERATED_FILES)"
+	rm -f semc parser.tab.c parser.tab.h lex.yy.c
