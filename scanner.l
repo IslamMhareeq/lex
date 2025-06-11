@@ -20,8 +20,8 @@ HEX        0[xX][0-9A-Fa-f]+
 [ \t\r\n]+                  /* skip whitespace */
 "//".*                      /* skip single line comments */
 
-"/#->"                      { BEGIN(COMMENT); }
-<COMMENT>"<-#/"             { BEGIN(INITIAL); }
+"#->"                       { BEGIN(COMMENT); }
+<COMMENT>"<-#"              { BEGIN(INITIAL); }
 <COMMENT>.                  /* ignore comment content */
 <COMMENT>\n                 /* ignore newlines in comments */
 

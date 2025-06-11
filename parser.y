@@ -1263,6 +1263,8 @@ static const char *NodeTypeNames[] = {
     "ID", "LIT"
 };
 
+// Replace the existing print_node function in parser.y with this version
+
 static void indent(int depth) {
     for (int i = 0; i < depth * 4; i++) {
         printf(" ");
@@ -1270,13 +1272,16 @@ static void indent(int depth) {
 }
 
 void print_node(AST *z, int d) {
-    if (!z) return;
+    if (!z) {
+        printf("null");
+        return;
+    }
     
     switch(z->type) {
         case N_FUNC:
             printf("(FUNC\n");
             indent(d+1);
-            printf("%s\n", z->c[0]->lexeme);  // function name
+            printf("%s\n", z->c[0] ? z->c[0]->lexeme : "null");  // function name
             indent(d+1);
             print_node(z->c[1], d+1);  // parameters
             printf("\n");
@@ -1285,6 +1290,7 @@ void print_node(AST *z, int d) {
             printf("\n");
             indent(d+1);
             printf("(BODY\n");
+            indent(d+2);
             print_node(z->c[3], d+2);  // body
             printf("\n");
             indent(d+1);
@@ -1311,14 +1317,24 @@ void print_node(AST *z, int d) {
             
         case N_PARAM:
             if (z->typ && strlen(z->typ) > 0) {  // source parameter name (par1, par2, etc.)
-                printf("(%s %s %s)", z->typ, z->c[0]->lexeme, z->lexeme);
+                printf("(%s %s %s)", z->typ, 
+                       z->c[0] ? z->c[0]->lexeme : "null", 
+                       z->lexeme ? z->lexeme : "null");
             } else {
-                printf("(%s %s)", z->c[0]->lexeme, z->lexeme);
+                printf("(%s %s)", 
+                       z->c[0] ? z->c[0]->lexeme : "null", 
+                       z->lexeme ? z->lexeme : "null");
             }
             break;
             
         case N_RET:
-            printf("(RET %s)", z->lexeme);
+            if (z->n > 0 && z->c[0]) {
+                printf("(RET ");
+                print_node(z->c[0], d);
+                printf(")");
+            } else {
+                printf("(RET %s)", z->lexeme ? z->lexeme : "null");
+            }
             break;
             
         case N_BLOCK:
@@ -1342,7 +1358,7 @@ void print_node(AST *z, int d) {
             printf("\n");
             indent(d+1);
             print_node(z->c[1], d+1);  // then block
-            if (z->n > 2) {
+            if (z->n > 2 && z->c[2]) {
                 printf("\n");
                 indent(d+1);
                 print_node(z->c[2], d+1);  // else block
@@ -1364,7 +1380,7 @@ void print_node(AST *z, int d) {
             break;
             
         case N_BINOP:
-            printf("(%s ", z->lexeme);
+            printf("(%s ", z->lexeme ? z->lexeme : "null");
             print_node(z->c[0], d);
             printf(" ");
             print_node(z->c[1], d);
@@ -1372,13 +1388,13 @@ void print_node(AST *z, int d) {
             break;
             
         case N_UNOP:
-            printf("(%s ", z->lexeme);
+            printf("(%s ", z->lexeme ? z->lexeme : "null");
             print_node(z->c[0], d);
             printf(")");
             break;
             
         case N_CALL:
-            printf("(CALL %s", z->lexeme);
+            printf("(CALL %s", z->lexeme ? z->lexeme : "null");
             for (int i = 0; i < z->n; i++) {
                 printf(" ");
                 print_node(z->c[i], d);
@@ -1433,7 +1449,7 @@ void print_node(AST *z, int d) {
             break;
             
         case N_ID:
-            printf("%s", z->lexeme);
+            printf("%s", z->lexeme ? z->lexeme : "null");
             break;
             
         case N_LIT:
@@ -1449,7 +1465,11 @@ void print_node(AST *z, int d) {
             for (int i = 0; i < z->n; i++) {
                 printf("\n");
                 indent(d+1);
-                print_node(z->c[i], d+1);
+                if (z->c[i]) {
+                    print_node(z->c[i], d+1);
+                } else {
+                    printf("null");
+                }
             }
             if (z->n > 0) {
                 printf("\n");
